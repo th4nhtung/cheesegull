@@ -30,12 +30,20 @@ func LogIn(username, password string) (*Client, error) {
 	vals.Add("username", username)
 	vals.Add("password", password)
 	vals.Add("autologin", "on")
-	vals.Add("login", "login")
-	loginResp, err := c.PostForm("https://old.ppy.sh/forum/ucp.php?mode=login", vals)
+	vals.Add("login", "Login")
+	//loginResp, err := c.PostForm("https://old.ppy.sh/forum/ucp.php?mode=login", vals)
+	req, err := http.NewRequest("POST", "https://old.ppy.sh/forum/ucp.php?mode=login", strings.NewReader(vals.Encode()))
+    if err != nil {
+        return nil, err
+    }
+    req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+    req.Header.Set("Referer", "https://old.ppy.sh/forum/ucp.php?mode=login")
+    loginResp, err := c.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	if loginResp.Request.URL.Path != "/" {
+	if loginResp.Request.URL.Path != "/home" {
+		fmt.Printf("%s", loginResp.Request.URL.Path)
 		return nil, errors.New("cheesegull/downloader: could not log in (was not redirected to index)")
 	}
 	return (*Client)(c), nil
