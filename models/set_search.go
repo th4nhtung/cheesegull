@@ -6,6 +6,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"encoding/hex"
+	"net/url"
+	"net/http"
+	"io/ioutil"
+	"time"
 )
 
 // SearchOptions are options that can be passed to SearchSets for filtering
@@ -54,142 +59,119 @@ func sIntCommaSeparated(nums []int) string {
 	return b.String()
 }
 
+func getAccount(db *sql.DB) (u, p string) {
+	var md5, salt string
+	q := `SELECT username, password_md5, salt FROM users WHERE id = 1`
+
+	rows, err := db.Query(q)
+	if err != nil {
+		return "", ""
+	}
+
+	rows.Next()
+	if err := rows.Scan(&u, &md5, &salt); err != nil {
+		return "", ""
+	}
+	enc, _ := hex.DecodeString(md5)
+	dec, _ := decrypt([]byte(salt), enc)
+	p = string(dec)
+	return u, p
+}
+
+func apiToDirectStatus(apiStatus int) int {
+	if apiStatus == 1 {
+		return 0
+	} else if apiStatus == 2 {
+		return 7
+	} else if apiStatus == 4 {
+		return 8
+	} else if apiStatus == 3 {
+		return 3
+	} else if apiStatus == 0 {
+		return 2
+	} else if apiStatus == -2 {
+		return 5
+	} else {
+		return 0
+	}
+}
+
 // SearchSets retrieves sets, filtering them using SearchOptions.
 func SearchSets(db, searchDB *sql.DB, opts SearchOptions) ([]Set, error) {
-	sm := strconv.Itoa(int(opts.setModes()))
+	osuUsername, osuPassword := getAccount(db)
+	md5Password := hash(osuPassword)
 
-	// first, we create the where conditions that are valid for both querying mysql
-	// straight or querying sphinx first.
-	var whereConds string
-	var havingConds string
-	if len(opts.Status) != 0 {
-		whereConds = "ranked_status IN (" + sIntCommaSeparated(opts.Status) + ") "
-	}
-	if len(opts.Mode) != 0 {
-		// This is a hack. Apparently, Sphinx does not support AND bitwise
-		// operations in the WHERE clause, so we're placing that in the SELECT
-		// clause and only making sure it's correct in this place.
-		havingConds = " valid_set_modes = " + sm + " "
-	}
+	//c, err := downloader.LogIn(*osuUsername, *osuPassword)
+	//sm := strconv.Itoa(int(opts.setModes()))
 
 	sets := make([]Set, 0, opts.Amount)
-	setIDs := make([]int, 0, opts.Amount)
-	// setMap is used when a query is given to make sure the results are kept in the correct
-	// order given by sphinx.
-	setMap := make(map[int]int, opts.Amount)
-	// if Sphinx is used, limit will be cleared so that it's not used for the mysql query
-	limit := fmt.Sprintf(" LIMIT %d, %d ", opts.Offset, opts.Amount)
-
-	if opts.Query != "" {
-		setIDsQuery := "SELECT id, set_modes & " + sm + " AS valid_set_modes FROM cg WHERE "
-
-		// add filters to query
-		// Yes. I know. Prepared statements. But Sphinx doesn't like them, so
-		// bummer.
-		setIDsQuery += "MATCH('" + mysqlStringReplacer.Replace(opts.Query) + "') "
-		if whereConds != "" {
-			setIDsQuery += "AND " + whereConds
-		}
-		if havingConds != "" {
-			setIDsQuery += " AND " + havingConds
-		}
-
-		// set limit
-		setIDsQuery += " ORDER BY WEIGHT() DESC, id DESC " + limit + " OPTION ranker=sph04, max_matches=20000 "
-		limit = ""
-
-		// fetch rows
-		rows, err := searchDB.Query(setIDsQuery)
-		if err != nil {
-			return nil, err
-		}
-
-		// contains IDs of the sets we will retrieve
-		for rows.Next() {
-			var id int
-			err = rows.Scan(&id, new(int))
-			if err != nil {
-				return nil, err
-			}
-			setIDs = append(setIDs, id)
-			sets = sets[:len(sets)+1]
-			setMap[id] = len(sets) - 1
-		}
-
-		// short path: there are no sets
-		if len(sets) == 0 {
-			return []Set{}, nil
-		}
-
-		whereConds = "id IN (" + sIntCommaSeparated(setIDs) + ")"
-		havingConds = ""
-	}
-
-	if whereConds != "" {
-		whereConds = "WHERE " + whereConds
-	}
-	if havingConds != "" {
-		havingConds = " HAVING " + havingConds
-	}
-	setsQuery := "SELECT " + setFields + ", set_modes & " + sm + " AS valid_set_modes FROM sets " +
-		whereConds + havingConds + " ORDER BY id DESC " + limit
-	rows, err := db.Query(setsQuery)
-
-	if err != nil {
-		return nil, err
-	}
-
-	// find all beatmaps, but leave children aside for the moment.
-	for rows.Next() {
-		var s Set
-		err = rows.Scan(
-			&s.ID, &s.RankedStatus, &s.ApprovedDate, &s.LastUpdate, &s.LastChecked,
-			&s.Artist, &s.Title, &s.Creator, &s.Source, &s.Tags, &s.HasVideo, &s.Genre,
-			&s.Language, &s.Favourites, new(int),
-		)
-		if err != nil {
-			return nil, err
-		}
-		// we get the position we should place s in from the setMap, this way we
-		// keep the order of results as sphinx prefers.
-		pos, ok := setMap[s.ID]
-		if ok {
-			sets[pos] = s
+	if len(opts.Status) < 2 && len(opts.Mode) < 2 {
+		search_uri := fmt.Sprintf("https://old.ppy.sh/web/osu-search.php?u=%s&h=%s&p=%d", osuUsername, md5Password, opts.Offset / 100)
+		if opts.Query != "" {
+			search_uri += "&q=" + url.QueryEscape(opts.Query)
 		} else {
-			sets = append(sets, s)
-			setIDs = append(setIDs, s.ID)
-			setMap[s.ID] = len(sets) - 1
+			search_uri += "&q=Newest"
 		}
-	}
-
-	if len(sets) == 0 {
-		return sets, nil
-	}
-
-	rows, err = db.Query(
-		"SELECT "+beatmapFields+" FROM beatmaps WHERE parent_set_id IN ("+
-			inClause(len(setIDs))+")",
-		sIntToSInterface(setIDs)...,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	for rows.Next() {
-		var b Beatmap
-		err = rows.Scan(
-			&b.ID, &b.ParentSetID, &b.DiffName, &b.FileMD5, &b.Mode, &b.BPM,
-			&b.AR, &b.OD, &b.CS, &b.HP, &b.TotalLength, &b.HitLength,
-			&b.Playcount, &b.Passcount, &b.MaxCombo, &b.DifficultyRating,
-		)
+		if len(opts.Status) > 0 {
+			status := apiToDirectStatus(opts.Status[0])
+			search_uri += "&r=" + url.QueryEscape(strconv.Itoa(status))
+		} else {
+			search_uri += "&r=0"
+		}
+		if len(opts.Mode) > 0 {
+			search_uri += "&m=" + url.QueryEscape(strconv.Itoa(opts.Mode[0]))
+		} else {
+			search_uri += "&m=0"
+		}
+		req, err := http.Get(search_uri)
 		if err != nil {
 			return nil, err
 		}
-		parentSet, ok := setMap[b.ParentSetID]
-		if !ok {
-			continue
+		body, err := ioutil.ReadAll(req.Body)
+		for _, line := range strings.Split(strings.TrimSuffix(string(body), "\n"), "\n") {
+			cp := strings.SplitN(line, "|", 14)
+			if (len(cp) == 1) {
+				continue
+			}
+			for i, v := range cp {
+				if v == "" {
+					cp[i] = "0"
+				}
+			}
+			var s Set
+			s.Artist           = cp[1]
+			s.Title            = cp[2]
+			s.Creator          = cp[3]
+			s.RankedStatus, _  = strconv.Atoi(cp[4])
+			rating, _         := strconv.ParseFloat(cp[5], 32)
+			s.Rating           = float32(rating)
+			date_str, _       := time.Parse("2006-01-02T15:04:05Z07:00", cp[6])
+			if s.RankedStatus > 0 { // 4: loved | 3: qualified | 2: approved | 1: ranked
+				s.ApprovedDate = date_str
+			} else { // 0: pending | -1: WIP | -2: graveyard
+				s.LastUpdate   = date_str
+			}
+			s.ID, _            = strconv.Atoi(cp[7])
+			s.TopicID, _       = strconv.Atoi(cp[8])
+			s.HasVideo, _      = strconv.ParseBool(cp[9])
+			s.HasStoryboard, _ = strconv.ParseBool(cp[10])
+			bids := strings.Split(cp[13], ",")
+			children := make([]Beatmap, 0, len(bids))
+			for _, v := range bids {
+				var b Beatmap
+				b.ParentSetID = s.ID
+				ar := strings.Split(v, "★")
+				if (len(ar) < 2) {
+					continue
+				}
+				b.DiffName = strings.Trim(ar[0], " ")
+				fmt.Sscanf(ar[1], "%f@%d", &b.DifficultyRating, &b.Mode)
+				b.BPM = -1
+				children = append(children, b)
+			}
+			s.ChildrenBeatmaps = children
+			sets = append(sets, s)
 		}
-		sets[parentSet].ChildrenBeatmaps = append(sets[parentSet].ChildrenBeatmaps, b)
 	}
 
 	return sets, nil

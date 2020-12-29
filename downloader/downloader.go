@@ -31,7 +31,6 @@ func LogIn(username, password string) (*Client, error) {
 	vals.Add("password", password)
 	vals.Add("autologin", "on")
 	vals.Add("login", "Login")
-	//loginResp, err := c.PostForm("https://old.ppy.sh/forum/ucp.php?mode=login", vals)
 	req, err := http.NewRequest("POST", "https://old.ppy.sh/forum/ucp.php?mode=login", strings.NewReader(vals.Encode()))
     if err != nil {
         return nil, err

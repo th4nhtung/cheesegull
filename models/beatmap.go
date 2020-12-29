@@ -1,25 +1,35 @@
 package models
 
-import "database/sql"
+import (
+	"io/ioutil"
+	"fmt"
+	"strconv"
+	"encoding/json"
+	"database/sql"
+	"net/http"
+)
 
 // Beatmap represents a single beatmap (difficulty) on osu!.
 type Beatmap struct {
-	ID               int `json:"BeatmapID"`
-	ParentSetID      int
-	DiffName         string
-	FileMD5          string
-	Mode             int
-	BPM              float64
-	AR               float32
-	OD               float32
-	CS               float32
-	HP               float32
-	TotalLength      int
-	HitLength        int
-	Playcount        int
-	Passcount        int
-	MaxCombo         int
-	DifficultyRating float64
+	ID                   int `json:"BeatmapID"`
+	ParentSetID          int
+	DiffName             string
+	FileMD5              string
+	Mode                 int
+	BPM                  float64
+	AR                   float32
+	OD                   float32
+	CS                   float32
+	HP                   float32
+	TotalLength          int
+	HitLength            int
+	CountNormal          int
+	CountSlider          int
+	CountSpinner         int
+	Playcount            int
+	Passcount            int
+	MaxCombo             int
+	DifficultyRating     float64
 }
 
 const beatmapFields = `
@@ -75,14 +85,57 @@ func FetchBeatmaps(db *sql.DB, ids ...int) ([]Beatmap, error) {
 		return nil, nil
 	}
 
-	q := `SELECT ` + beatmapFields + ` FROM beatmaps WHERE id IN (` + inClause(len(ids)) + `)`
+	q := `SELECT email FROM users WHERE id = 1`
 
-	rows, err := db.Query(q, sIntToSInterface(ids)...)
+	rows, err := db.Query(q)
 	if err != nil {
 		return nil, err
 	}
 
-	return readBeatmapsFromRows(rows, len(ids))
+	var api_key string
+	rows.Next()
+	if err := rows.Scan(&api_key); err != nil {
+		return nil, err
+	}
+
+	bms := make([]Beatmap, 0, len(ids))
+	for _, id := range ids {
+		req, err := http.Get(fmt.Sprintf("https://old.ppy.sh/api/get_beatmaps?k=%s&b=%d", api_key, id))
+		if err != nil {
+			return nil, err
+		}
+		body, err := ioutil.ReadAll(req.Body)
+		var data []map[string]interface{}
+		if err = json.Unmarshal(body, &data); err != nil || len(data) == 0 {
+			return nil, err
+		}
+		var bm Beatmap
+		bm.ID, _                   = strconv.Atoi(data[0]["beatmap_id"].(string))
+		bm.ParentSetID, _          = strconv.Atoi(data[0]["beatmapset_id"].(string))
+		bm.DiffName                = data[0]["version"].(string)
+		bm.FileMD5                 = data[0]["file_md5"].(string)
+		bm.Mode, _                 = strconv.Atoi(data[0]["mode"].(string))
+		bm.BPM, _                  = strconv.ParseFloat(data[0]["bpm"].(string), 64)
+		AR, _                     := strconv.ParseFloat(data[0]["diff_approach"].(string), 32)
+		OD, _                     := strconv.ParseFloat(data[0]["diff_overall"].(string), 32)
+		CS, _                     := strconv.ParseFloat(data[0]["diff_size"].(string), 32)
+		HP, _                     := strconv.ParseFloat(data[0]["diff_drain"].(string), 32)
+		bm.AR                      = float32(AR)
+		bm.OD                      = float32(OD)
+		bm.CS                      = float32(CS)
+		bm.HP                      = float32(HP)
+		bm.TotalLength, _          = strconv.Atoi(data[0]["total_length"].(string))
+		bm.HitLength, _            = strconv.Atoi(data[0]["hit_length"].(string))
+		bm.CountNormal, _          = strconv.Atoi(data[0]["count_normal"].(string))
+		bm.CountSlider, _          = strconv.Atoi(data[0]["count_slider"].(string))
+		bm.CountSpinner, _         = strconv.Atoi(data[0]["count_spinner"].(string))
+		bm.Playcount, _            = strconv.Atoi(data[0]["playcount"].(string))
+		bm.Passcount, _            = strconv.Atoi(data[0]["passcount"].(string))
+		bm.MaxCombo, _             = strconv.Atoi(data[0]["max_combo"].(string))
+		bm.DifficultyRating, _     = strconv.ParseFloat(data[0]["difficultyrating"].(string), 64)
+		bms = append(bms, bm)
+	}
+	return bms, nil
 }
 
 // CreateBeatmaps adds beatmaps in the database.

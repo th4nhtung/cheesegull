@@ -1,27 +1,40 @@
 package models
 
 import (
+	"io/ioutil"
+	"fmt"
+	"strconv"
+	"encoding/json"
+	"net/http"
 	"database/sql"
 	"time"
 )
 
 // Set represents a set of beatmaps usually sharing the same song.
 type Set struct {
-	ID               int `json:"SetID"`
-	ChildrenBeatmaps []Beatmap
-	RankedStatus     int
-	ApprovedDate     time.Time
-	LastUpdate       time.Time
-	LastChecked      time.Time
-	Artist           string
-	Title            string
-	Creator          string
-	Source           string
-	Tags             string
-	HasVideo         bool
-	Genre            int
-	Language         int
-	Favourites       int
+	ID                     int `json:"SetID"`
+	ChildrenBeatmaps       []Beatmap
+	TopicID                int
+	RankedStatus           int
+	SubmitDate             time.Time
+	ApprovedDate           time.Time
+	LastUpdate             time.Time
+	LastChecked            time.Time
+	Artist                 string
+	ArtistUnicode          string
+	Title                  string
+	TitleUnicode           string
+	Creator                string
+	Source                 string
+	Tags                   string
+	HasVideo               bool
+	HasStoryboard          bool
+	DownloadUnavailable    bool
+	AudioUnavailable       bool
+	Genre                  int
+	Language               int
+	Favourites             int
+	Rating                 float32
 }
 
 const setFields = `id, ranked_status, approved_date, last_update, last_checked,
@@ -65,33 +78,86 @@ LIMIT ?`,
 	return sets, rows.Err()
 }
 
+func parseOsuDatetime(str string) time.Time {
+	t, _ := time.Parse("2006-01-02 15:04:05", str)
+	return t
+}
+
 // FetchSet retrieves a single set to show, alongside its children beatmaps.
 func FetchSet(db *sql.DB, id int, withChildren bool) (*Set, error) {
 	var s Set
-	err := db.QueryRow(`SELECT `+setFields+` FROM sets WHERE id = ? LIMIT 1`, id).Scan(
-		&s.ID, &s.RankedStatus, &s.ApprovedDate, &s.LastUpdate, &s.LastChecked,
-		&s.Artist, &s.Title, &s.Creator, &s.Source, &s.Tags, &s.HasVideo, &s.Genre,
-		&s.Language, &s.Favourites,
-	)
-	switch err {
-	case nil:
-		break // carry on
-	case sql.ErrNoRows:
-		// silently ignore no rows, and just don't return anything
-		return nil, nil
-	default:
-		return nil, err
-	}
+	q := `SELECT email FROM users WHERE id = 1`
 
-	if !withChildren {
-		return &s, nil
-	}
-
-	rows, err := db.Query(`SELECT `+beatmapFields+` FROM beatmaps WHERE parent_set_id = ?`, s.ID)
+	rows, err := db.Query(q)
 	if err != nil {
 		return nil, err
 	}
-	s.ChildrenBeatmaps, err = readBeatmapsFromRows(rows, 8)
+
+	var api_key string
+	rows.Next()
+	if err := rows.Scan(&api_key); err != nil {
+		return nil, err
+	}
+
+	req, err := http.Get(fmt.Sprintf("https://old.ppy.sh/api/get_beatmaps?k=%s&s=%d", api_key, id))
+	if err != nil {
+		return nil, err
+	}
+	body, err := ioutil.ReadAll(req.Body)
+	var data []map[string]interface{}
+	if err = json.Unmarshal(body, &data); err != nil || len(data) == 0 {
+		return nil, err
+	}
+	s.ID, _                     = strconv.Atoi(data[0]["beatmapset_id"].(string))
+	s.RankedStatus, _           = strconv.Atoi(data[0]["approved"].(string))
+	str, ok := data[0]["approved_date"].(string)
+	if ok {
+		s.ApprovedDate          = parseOsuDatetime(str)
+	} else {
+		s.ApprovedDate          = time.Time{}
+	}
+	s.SubmitDate                = parseOsuDatetime(data[0]["submit_date"].(string))
+	s.LastUpdate                = parseOsuDatetime(data[0]["last_update"].(string))
+	s.LastChecked               = time.Now().UTC().Truncate(time.Second)
+	s.Artist                    = data[0]["artist"].(string)
+	str, ok = data[0]["artist_unicode"].(string)
+	if ok {
+		s.ArtistUnicode         = str
+	} else {
+		s.ArtistUnicode         = ""
+	}
+	s.Title                     = data[0]["title"].(string)
+	str, ok = data[0]["title_unicode"].(string)
+	if ok {
+		s.TitleUnicode          = str
+	} else {
+		s.TitleUnicode          = ""
+	}
+	s.Creator                   = data[0]["creator"].(string)
+	s.Source                    = data[0]["source"].(string)
+	s.Tags                      = data[0]["tags"].(string)
+	s.HasVideo, _               = strconv.ParseBool(data[0]["video"].(string))
+	s.HasStoryboard, _          = strconv.ParseBool(data[0]["storyboard"].(string))
+	s.DownloadUnavailable, _    = strconv.ParseBool(data[0]["download_unavailable"].(string))
+	s.AudioUnavailable, _       = strconv.ParseBool(data[0]["audio_unavailable"].(string))
+	s.Genre, _                  = strconv.Atoi(data[0]["genre_id"].(string))
+	s.Language, _               = strconv.Atoi(data[0]["language_id"].(string))
+	s.Favourites, _             = strconv.Atoi(data[0]["favourite_count"].(string))
+	rating, _                  := strconv.ParseFloat(data[0]["rating"].(string), 32)
+	s.Rating                    = float32(rating)
+	if withChildren {
+		for i, ids := 0, make([]int, 0, 8); i <= len(data); i++ {
+			if (i == len(data)) {
+				s.ChildrenBeatmaps, err = FetchBeatmaps(db, ids...)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				id, _ := strconv.Atoi(data[i]["beatmap_id"].(string))
+				ids = append(ids, id)
+			}
+		}
+	}
 	return &s, err
 }
 

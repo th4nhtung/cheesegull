@@ -97,7 +97,7 @@ func Search(c *api.Context) {
 	sets, err := models.SearchSets(c.DB, c.SearchDB, models.SearchOptions{
 		Status: sIntWithBounds(query["status"], -2, 4),
 		Query:  query.Get("query"),
-		Mode:   sIntWithBounds(query["mode"], 0, 3),
+		Mode:   sIntWithBounds(query["mode"], -1, 3),
 
 		Amount: intWithBounds(mustInt(query.Get("amount")), 1, 100, 50),
 		Offset: mustPositive(mustInt(query.Get("offset"))),
