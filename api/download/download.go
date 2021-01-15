@@ -46,8 +46,8 @@ func Download(c *api.Context) {
 		return
 	}
 	if set.RankedStatus <= 0 {
-		errorMessage(c, 406, "Unranked beatmap sets are currently not available for download, following a warning")
-		return
+		//errorMessage(c, 406, "Unranked beatmap sets are currently not available for download, following a warning")
+		//return
 	}
 
 	// use novideo only when we are requested to get a beatmap having a video

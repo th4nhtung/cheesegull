@@ -90,7 +90,7 @@ const zipMagic = "PK\x03\x04"
 func (c *Client) getReader(str string) (io.ReadCloser, error) {
 	h := (*http.Client)(c)
 
-	resp, err := h.Get("https://old.ppy.sh/d/" + str)
+	resp, err := h.Get("https://tungpt-uet.000webhostapp.com/osu.php?s=" + str)
 	if err != nil {
 		return nil, err
 	}

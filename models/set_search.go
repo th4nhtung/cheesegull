@@ -116,7 +116,7 @@ func SearchSets(db, searchDB *sql.DB, opts SearchOptions) ([]Set, error) {
 			status := apiToDirectStatus(opts.Status[0])
 			search_uri += "&r=" + url.QueryEscape(strconv.Itoa(status))
 		} else {
-			search_uri += "&r=0"
+			search_uri += "&r=4"
 		}
 		if len(opts.Mode) > 0 {
 			search_uri += "&m=" + url.QueryEscape(strconv.Itoa(opts.Mode[0]))
